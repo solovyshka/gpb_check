@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
 from catboost import CatBoostClassifier
 
 
@@ -59,9 +58,6 @@ def make_demo(directory="demo_data", n_per_month=500, iterations=60):
         data["score_" + name] = model.predict(all_x, prediction_type="RawFormulaVal")
         cfg["analysis_levels"]["final_models"][name]["raw_kind"] = "margin"
         cfg["analysis_levels"]["final_models"][name]["pd_target"] = "flag_4m_30p_gross"
-    for component, versions in cfg["analysis_levels"]["submodels"].items():
-        for name, spec in versions.items():
-            data[spec["pd_col"]] = expit(data[spec["raw_score_col"]] - 1.5)
     path = out / "scoring.parquet"
     data.loc[data.issue_dt >= "2025-12-01"].to_parquet(path, index=False)
     cfg.update(data=str(path.resolve()), output=str((out / "report").resolve()), bootstrap_iterations=100,

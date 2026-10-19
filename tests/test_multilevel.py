@@ -141,6 +141,54 @@ def test_regression_measurement_split_is_independent_of_input_row_order():
     assert original.n_outcome.lt(len(frame) / 2).any()
 
 
+def raw_submodels(frame):
+    rng = np.random.default_rng(101)
+    versions = {}
+    for group in ("early_model", "long_model", "soc_dem"):
+        versions[group] = {}
+        for name in (("dub_22",) if group == "soc_dem" else ("dub_22", "dub_23")):
+            col = group + "_" + name
+            frame[col] = rng.normal(size=len(frame))
+            versions[group][name] = {"raw_score_col": col, "raw_higher_is_risk": True}
+    return versions
+
+
+def test_uncalibrated_submodels_need_only_scores_and_never_enter_calibration():
+    frame, cfg = sample_frame(), options()
+    cfg["analysis_levels"]["submodels"] = raw_submodels(frame)
+    # Old configuration keys must not require or invent submodel PD columns.
+    cfg["analysis_levels"]["submodels"]["early_model"]["dub_22"]["pd_col"] = "missing_obsolete_pd"
+    tables, notes = run_levels(frame, cfg)
+    sub = tables["levels_metrics"].query("level == 'submodels'")
+    assert set(sub.representation) == {"raw"}
+    for table in ("calibration_metrics", "calibration_curves", "calibration_gap_decomposition"):
+        if "entity" in tables[table]:
+            assert set(tables[table].entity) == {"final"}
+    quality = tables["submodel_quality"]
+    assert set(quality.entity) == {"early_model", "long_model", "soc_dem"}
+    soc = quality.query("entity == 'soc_dem' and scope == 'all'").iloc[0]
+    assert soc.model == "dub_22"
+    assert soc.gini_raw == pytest.approx(gini(frame.y, frame.soc_dem_dub_22))
+    assert "gini_raw_ci_low" in quality and "brier_pd" not in quality
+    assert not any("early_model/" in note or "soc_dem/" in note for note in notes)
+
+
+def test_regression_uses_same_raw_submodel_quality_for_both_final_responses():
+    frame, cfg = sample_frame(), options()
+    levels = cfg["analysis_levels"]
+    levels["submodels"] = raw_submodels(frame)
+    levels["regression"] = dict(split_measurement=True, min_defaults=1, min_goods=1)
+    # Change only final calibration, leaving all raw scores fixed.
+    frame.pd_dub_23 = expit(frame.score_dub_23 + np.where(np.arange(len(frame)) % 2, 4, -4))
+    panel = regression_quality_panel(frame, levels, cfg)
+    assert set(panel.predictor_representation) == {"raw"}
+    predictors = [c for c in panel if c.startswith("gini__") or c.startswith("delta_gini__")]
+    before = panel.query("representation == 'raw'").set_index("period")
+    after = panel.query("representation == 'pd'").set_index("period")
+    pd.testing.assert_frame_equal(before[predictors], after[predictors])
+    assert not np.allclose(before.response_delta_gini, after.response_delta_gini)
+
+
 def test_four_way_comparison_uses_identical_complete_cohort():
     frame, cfg = sample_frame(), options()
     frame.loc[0, "score_dub_23"] = np.nan

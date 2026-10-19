@@ -72,11 +72,13 @@ def raw_risk(frame, spec):
     return numeric(frame, spec["raw_score_col"]) * (1 if spec.get("raw_higher_is_risk", True) else -1)
 
 
-def paired_cohort(frame, specs, entity, audit):
+def paired_cohort(frame, specs, entity, audit, require_pd=True):
     columns = []
     for spec in specs:
-        columns += [spec["raw_score_col"], spec["pd_col"]]
-        if spec.get("uncalibrated_pd_col"):
+        columns.append(spec["raw_score_col"])
+        if require_pd:
+            columns.append(spec["pd_col"])
+        if require_pd and spec.get("uncalibrated_pd_col"):
             columns.append(spec["uncalibrated_pd_col"])
     columns = list(dict.fromkeys(columns))
     missing = set(columns) - set(frame.columns)
@@ -90,7 +92,7 @@ def paired_cohort(frame, specs, entity, audit):
         audit.append(dict(entity=entity, period=month, n_input=len(ix),
                           n_complete=int(valid[ix].sum()), n_missing=int((~valid[ix]).sum())))
     result = frame.loc[valid].copy().reset_index(drop=True)
-    for spec in specs:
+    for spec in (specs if require_pd else []):
         probability(result, spec["pd_col"])
         if spec.get("uncalibrated_pd_col"):
             probability(result, spec["uncalibrated_pd_col"])
@@ -297,9 +299,8 @@ def regression_quality_panel(frame, levels, cfg):
     frame["_half"] = [hashlib.blake2b((str(seed) + ":" + str(v)).encode(), digest_size=8).digest()[0] % 2 for v in frame[split_key]]
     crossfit = regression.get("split_measurement", True)
     min_bad, min_good = regression.get("min_defaults", 30), regression.get("min_goods", 30)
-    all_specs = list(levels["final_models"].values())
-    all_specs += [spec for versions in levels.get("submodels", {}).values() for spec in versions.values()]
-    columns = {s[c] for s in all_specs for c in ("raw_score_col", "pd_col")}
+    columns = {s[c] for s in levels["final_models"].values() for c in ("raw_score_col", "pd_col")}
+    columns.update(spec["raw_score_col"] for versions in levels.get("submodels", {}).values() for spec in versions.values())
     missing = columns - set(frame)
     if missing:
         raise ValueError(f"Нет колонок регрессионного panel: {sorted(missing)}")
@@ -313,22 +314,26 @@ def regression_quality_panel(frame, levels, cfg):
         outcome = part.loc[part._half == 1] if crossfit else part
         yp, yo = (d[cfg["target"]].to_numpy(dtype=int) for d in (predictor, outcome))
         size_ok = all((yy == 1).sum() >= min_bad and (yy == 0).sum() >= min_good for yy in (yp, yo))
+        # Submodels have only uncalibrated scores. The same predictor qualities
+        # explain both final raw-score and final calibrated-PD Gini gaps.
+        qualities = {}
+        for component, versions in levels.get("submodels", {}).items():
+            measured = {m: WeightedGini(yp, raw_risk(predictor, spec))() for m, spec in versions.items()}
+            for m, value in measured.items():
+                qualities[f"gini__{component}__{m}"] = value
+            if set(measured) == {"dub_22", "dub_23"}:
+                qualities["delta_gini__" + component] = measured["dub_23"] - measured["dub_22"]
         for representation in ("raw", "pd"):
             row = dict(period=str(period), representation=representation, n_predictor=len(predictor),
                        n_outcome=len(outcome), defaults_predictor=int(yp.sum()), defaults_outcome=int(yo.sum()),
-                       split_measurement=crossfit, reliable_size=size_ok)
+                       split_measurement=crossfit, reliable_size=size_ok,
+                       predictor_representation="raw", **qualities)
 
             def score(data, spec):
                 return raw_risk(data, spec) if representation == "raw" else probability(data, spec["pd_col"])
 
             final = {m: WeightedGini(yo, score(outcome, spec))() for m, spec in levels["final_models"].items()}
             row["response_delta_gini"] = final["dub_23"] - final["dub_22"]
-            for component, versions in levels.get("submodels", {}).items():
-                measured = {m: WeightedGini(yp, score(predictor, spec))() for m, spec in versions.items()}
-                for m, value in measured.items():
-                    row[f"gini__{component}__{m}"] = value
-                if set(measured) == {"dub_22", "dub_23"}:
-                    row["delta_gini__" + component] = measured["dub_23"] - measured["dub_22"]
             rows.append(row)
     return pd.DataFrame(rows, columns=None if rows else ["period", "representation", "reliable_size", "response_delta_gini"])
 
@@ -433,7 +438,7 @@ def run_levels(frame, cfg):
     edges = np.asarray(levels.get("pd_bins", [0, .01, .025, .05, .075, .1, .15, .2, .3, .5, 1]), float)
     if edges[0] != 0 or edges[-1] != 1 or not (np.diff(edges) > 0).all():
         raise ValueError("pd_bins должны строго возрастать от 0 до 1")
-    audit, metrics, transitions, details, calibration, curves, decomposition, top_tables = [], [], [], [], [], [], [], []
+    audit, metrics, transitions, details, calibration, curves, decomposition, top_tables, quality_rows = [], [], [], [], [], [], [], [], []
     notes = []
     entities = {"final": levels["final_models"], **levels.get("submodels", {})}
     if len(entities) != len(levels.get("submodels", {})) + 1:
@@ -441,9 +446,10 @@ def run_levels(frame, cfg):
     for entity, versions in entities.items():
         if not versions or set(versions) - {"dub_22", "dub_23"}:
             raise ValueError(f"{entity}: ожидаются dub_22/dub_23")
-        common = paired_cohort(frame, list(versions.values()), entity, audit)
+        is_final = entity == "final"
+        common = paired_cohort(frame, list(versions.values()), entity, audit, require_pd=is_final)
         if common.empty:
-            notes.append(f"{entity}: нет полной парной выборки score/PD")
+            notes.append(f"{entity}: нет полной парной выборки {'score/PD' if is_final else 'скоров подмоделей'}")
             continue
         if entity == "final":
             from diagnose import top_risk_diagnostics
@@ -457,9 +463,9 @@ def run_levels(frame, cfg):
         for scope, part in all_scopes(common):
             if not len(part):
                 continue
-            # Compare versions at both representations on the same complete rows.
+            # Only the final models have calibrated PD; submodels expose raw scores.
             if set(versions) == {"dub_22", "dub_23"}:
-                for representation in ("raw", "pd"):
+                for representation in (("raw", "pd") if is_final else ("raw",)):
                     scores = {m: raw_risk(part, s) if representation == "raw" else probability(part, s["pd_col"])
                               for m, s in versions.items()}
                     meta = dict(level="scores" if entity == "final" else "submodels", entity=entity,
@@ -470,6 +476,15 @@ def run_levels(frame, cfg):
                     transitions.extend(pair_rows)
                     if len(default_rows):
                         details.append(default_rows)
+            if not is_final:
+                y = part[cfg["target"]].to_numpy(dtype=int)
+                for name, spec in versions.items():
+                    evaluate = WeightedGini(y, raw_risk(part, spec))
+                    quality_rows.append(dict(entity=entity, model=name, scope=scope,
+                                             representation="raw", ranking_target=cfg["target"],
+                                             n=len(part), defaults=int(y.sum()), goods=int((1 - y).sum()),
+                                             **metric_ci(part, cfg, lambda w: {"gini_raw": evaluate(w)})))
+                continue
             if entity == "final":
                 decomposition.append(calibration_gap_decomposition(part, versions, cfg, scope))
             for name, spec in versions.items():
@@ -483,8 +498,8 @@ def run_levels(frame, cfg):
                 row["target_matches_pd_target"] = spec.get("pd_target") == cfg["target"]
                 row["ranking_target"] = cfg["target"]
                 own_target = spec.get("pd_target")
-                # Rankability for the downstream early target and probability calibration
-                # for a submodel's own target are distinct evaluations.
+                # Rankability for the early target and probability calibration
+                # for a final model's calibration target are distinct evaluations.
                 probability_target = own_target if own_target in part.columns else cfg["target"]
                 prob_frame = part.loc[part[probability_target].notna()]
                 if not prob_frame[probability_target].isin([0, 1]).all():
@@ -517,7 +532,7 @@ def run_levels(frame, cfg):
                                                           dict(cfg, bootstrap_iterations=0), group_meta, detail=False)
                         group_row.update(calibration_mapping(raw_risk(group_part, spec), probability(group_part, spec["pd_col"])))
                         calibration.append(group_row)
-        for name, spec in versions.items():
+        for name, spec in (versions.items() if is_final else []):
             if spec.get("pd_target") not in frame.columns:
                 notes.append(f"{entity}/{name}: PD_target={spec.get('pd_target') or 'unknown'} неизвестен/отсутствует; Brier/LogLoss относительно {cfg['target']} не доказывают плохую калибровку для собственного подтаргета.")
     tables = {"levels_metrics": pd.DataFrame(metrics), "levels_pair_transitions": pd.DataFrame(transitions),
@@ -525,11 +540,8 @@ def run_levels(frame, cfg):
               "levels_cohort_audit": pd.DataFrame(audit), "calibration_metrics": pd.DataFrame(calibration),
               "calibration_curves": pd.DataFrame(curves), "calibration_gap_decomposition": pd.DataFrame(decomposition),
               "levels_top_risk": pd.concat(top_tables, ignore_index=True) if top_tables else pd.DataFrame()}
-    quality = tables["calibration_metrics"]
-    if len(quality):
-        if "calibration_group" in quality:
-            quality = quality.loc[quality.calibration_group.isna()]
-        tables["submodel_quality"] = quality.loc[quality.entity != "final"].copy()
+    tables["submodel_quality"] = pd.DataFrame(quality_rows, columns=None if quality_rows else
+                                             ["entity", "model", "scope", "representation", "ranking_target", "n", "gini_raw"])
     if levels.get("regression", {}).get("enabled", True):
         panel = regression_quality_panel(frame, levels, cfg)
         coefs, diagnostics, fitted = fit_quality_regression(panel, levels)
@@ -577,7 +589,7 @@ def plot_levels(tables, output):
     sub = sub.loc[(sub.entity != "final") & (sub.scope == "recent")]
     if len(sub):
         sub.pivot(index="entity", columns="representation", values="delta_gini").mul(100).plot.bar(ax=axes[1, 1])
-        axes[1, 1].set_title("Submodel Gini gaps: recent, 23 - 22")
+        axes[1, 1].set_title("Raw submodel Gini gaps: recent, 23 - 22")
     for axis in axes[0]:
         axis.tick_params(axis="x", rotation=45)
     fig.savefig(output / "levels_overview.png", dpi=150)
