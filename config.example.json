@@ -1,0 +1,83 @@
+{
+  "data": "data/scoring.parquet",
+  "output": "reports/dub_comparison",
+  "id_col": "App_id",
+  "cluster_col": null,
+  "date_col": "issue_dt",
+  "target": "flag_4m_30p_gross",
+  "max_issue_date": "2026-04-30",
+  "secondary_targets": ["flag_6m_30p_gross"],
+  "reference_periods": ["2025-12", "2026-01", "2026-02"],
+  "recent_periods": ["2026-03", "2026-04"],
+  "models": {
+    "dub_22": {
+      "score_col": "pd_dub_22",
+      "higher_is_risk": true,
+      "path": "models/dub_22.cbm",
+      "feature_map": {
+        "early_model": "early_model_dub_22",
+        "long_model": "long_model_dub_22",
+        "soc_dem": "soc_dem_dub_22"
+      }
+    },
+    "dub_23": {
+      "score_col": "pd_dub_23",
+      "higher_is_risk": true,
+      "path": "models/dub_23.cbm",
+      "feature_map": {
+        "early_model": "early_model_dub_23",
+        "long_model": "long_model_dub_23"
+      }
+    }
+  },
+  "components": {
+    "early_model_dub_22": {"higher_is_risk": true},
+    "long_model_dub_22": {"higher_is_risk": true},
+    "soc_dem_dub_22": {"higher_is_risk": true},
+    "early_model_dub_23": {"higher_is_risk": true},
+    "long_model_dub_23": {"higher_is_risk": true}
+  },
+  "segments": [],
+  "reject_rates": [0.05, 0.1, 0.2, 0.3],
+  "bootstrap_iterations": 500,
+  "seed": 42,
+  "min_defaults": 30,
+  "min_goods": 30,
+  "diagnostic_sample_per_window": 5000,
+  "shap_background_size": 64,
+  "tree_step": 25,
+  "max_local_trees": 30,
+  "thread_count": 4,
+  "analysis_levels": {
+    "enabled": true,
+    "final_models": {
+      "dub_22": {"raw_score_col": "score_dub_22", "pd_col": "pd_dub_22", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null},
+      "dub_23": {"raw_score_col": "score_dub_23", "pd_col": "pd_dub_23", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null}
+    },
+    "submodels": {
+      "early_model": {
+        "dub_22": {"raw_score_col": "early_model_dub_22", "pd_col": "pd_early_model_dub_22", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null},
+        "dub_23": {"raw_score_col": "early_model_dub_23", "pd_col": "pd_early_model_dub_23", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null}
+      },
+      "long_model": {
+        "dub_22": {"raw_score_col": "long_model_dub_22", "pd_col": "pd_long_model_dub_22", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null},
+        "dub_23": {"raw_score_col": "long_model_dub_23", "pd_col": "pd_long_model_dub_23", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null}
+      },
+      "soc_dem": {
+        "dub_22": {"raw_score_col": "soc_dem_dub_22", "pd_col": "pd_soc_dem_dub_22", "raw_higher_is_risk": true, "raw_kind": "score", "pd_target": null}
+      }
+    },
+    "pd_bins": [0, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, 1],
+    "regression": {
+      "enabled": true,
+      "frequency": "M",
+      "predictors": ["delta_gini__early_model", "delta_gini__long_model", "gini__soc_dem__dub_22"],
+      "split_measurement": true,
+      "min_periods": 12,
+      "min_defaults": 30,
+      "min_goods": 30,
+      "hac_lags": 1,
+      "holdout_fraction": 0.25
+    }
+  }
+}

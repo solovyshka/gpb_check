@@ -1,0 +1,30 @@
+{
+  "train": "data/train.parquet",
+  "validation": "data/validation.parquet",
+  "test": "data/oot.parquet",
+  "output": "reports/controlled_ablation",
+  "id_col": "App_id",
+  "date_col": "issue_dt",
+  "target": "flag_4m_30p_gross",
+  "max_issue_date": "2026-04-30",
+  "reference_periods": ["2025-12", "2026-01", "2026-02"],
+  "recent_periods": ["2026-03", "2026-04"],
+  "base_features": ["early_model_dub_22", "long_model_dub_22", "common_feature_1", "common_feature_2"],
+  "soc_dem_features": ["soc_dem_dub_22"],
+  "fps_prefix": "fps",
+  "categorical_features": [],
+  "seeds": [42, 1729, 2026],
+  "bootstrap_iterations": 500,
+  "params": {
+    "iterations": 500,
+    "depth": 6,
+    "learning_rate": 0.04,
+    "loss_function": "Logloss",
+    "eval_metric": "AUC",
+    "l2_leaf_reg": 5,
+    "thread_count": 4,
+    "use_best_model": false,
+    "allow_writing_files": false,
+    "verbose": false
+  }
+}

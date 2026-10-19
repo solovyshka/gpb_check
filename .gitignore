@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+reports/
+demo_data/
+*.cbm
+*.parquet
+catboost_info/
+data/
+config.json
+ablation.json
+.env
+.env.*
