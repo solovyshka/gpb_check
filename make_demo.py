@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.special import expit
 from catboost import CatBoostClassifier
 
 
@@ -35,6 +36,11 @@ def make_demo(directory="demo_data", n_per_month=500, iterations=60):
             "common_feature_1": common, "region": region, "fps_signal": fps,
             "fps_noise": rng.normal(size=n)}))
     data = pd.concat(frames, ignore_index=True)
+    calibration_segments = ["sum_request_less_500", "sum_request_500_1000", "sum_request_more_1000k"]
+    segment_index = rng.integers(0, 3, len(data))
+    data["calibration_segment"] = np.asarray(calibration_segments)[segment_index]
+    for index, column in enumerate(calibration_segments):
+        data[column] = (segment_index == index).astype(int)
     data.loc[data.issue_dt >= "2026-05-01", "flag_4m_30p_gross"] = np.nan
     data.loc[data.issue_dt >= "2026-03-01", "flag_6m_30p_gross"] = np.nan
     train = data.loc[data.issue_dt < "2025-10-01"]
@@ -58,6 +64,10 @@ def make_demo(directory="demo_data", n_per_month=500, iterations=60):
         data["score_" + name] = model.predict(all_x, prediction_type="RawFormulaVal")
         cfg["analysis_levels"]["final_models"][name]["raw_kind"] = "margin"
         cfg["analysis_levels"]["final_models"][name]["pd_target"] = "flag_4m_30p_gross"
+    # Synthetic external segment calibration: monotone within each segment,
+    # with stronger between-segment shifts on recent cohorts. No submodel is calibrated.
+    strength = np.where(data.issue_dt >= "2026-03-01", 1.5, .15)
+    data["pd_dub_23"] = expit(data["score_dub_23"] + np.array([-.8, 0, .8])[segment_index] * strength)
     path = out / "scoring.parquet"
     data.loc[data.issue_dt >= "2025-12-01"].to_parquet(path, index=False)
     cfg.update(data=str(path.resolve()), output=str((out / "report").resolve()), bootstrap_iterations=100,

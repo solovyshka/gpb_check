@@ -442,6 +442,75 @@ if handles:
 plt.show()
 
 # %% [markdown]
+# ### 5.3. Одна функция: перемещение dub_23 между сегментами калибровки
+#
+# Группировка произвольная: существующая колонка квартала, месяца, версии или другого среза.
+# Ниже для примера явно создаём quarter; функция сама даты в месяцы НЕ преобразует.
+# REFERENCE_VALUE и COMPARISON_VALUE — два значения GROUP_COL, а не даты или PD-пороги.
+# В каждой группе ранги считаются по всем трём сегментам вместе. Подмодели не нужны.
+#
+# Подайте raw (исходные данные), а не final_df: для этого анализа нужны только выходы dub_23,
+# и отсутствие dub_22 не должно исключать выдачу. Флаги сегментов: ровно один 1 на заявку.
+# Если сегмент хранится одной колонкой, замените segment_flag_cols на segment_col и segment_order.
+
+# %%
+from calibration_movement import plot_dub23_calibration
+
+movement_data = raw.copy()
+GROUP_COL = "quarter"
+movement_data[GROUP_COL] = pd.to_datetime(movement_data[cfg["date_col"]]).dt.to_period("Q").astype(str)
+REFERENCE_VALUE = "2025Q4"  # Замените на значение из своих данных.
+COMPARISON_VALUE = "2026Q1"
+GROUP_ORDER = sorted(movement_data[GROUP_COL].dropna().unique())
+
+movement_result = plot_dub23_calibration(
+    movement_data,
+    group_col=GROUP_COL,
+    reference_value=REFERENCE_VALUE,
+    comparison_value=COMPARISON_VALUE,
+    raw_score_col="score_dub_23",
+    pd_col="pd_dub_23",
+    target_col=cfg["target"],
+    id_col=cfg["id_col"],
+    segment_flag_cols=["sum_request_less_500", "sum_request_500_1000", "sum_request_more_1000k"],
+    group_order=GROUP_ORDER,
+    higher_score_higher_risk=True,
+    date_col=cfg["date_col"],
+    max_issue_date=cfg.get("max_issue_date"),
+    cluster_col=cfg.get("cluster_col"),
+    bootstrap_iterations=cfg["bootstrap_iterations"],
+    scatter_max_goods=3000,
+    output_dir=PROJECT_DIR / "reports" / "calibration_movement",
+)
+
+for name, fig in movement_result["figures"].items():
+    print(name)
+    display(fig)
+for message in movement_result["messages"]:
+    print(message)
+
+# %% [markdown]
+# ### 5.4. Проверяем расчёты за графиками
+#
+# rank_movements — все использованные заявки с исходным рангом, новым рангом и сдвигом.
+# cohort_audit — фильтрация. gini_by_segment: __all__ означает все три сегмента вместе.
+# segment_pairs: строки — сегмент дефолта, столбцы — сегмент недефолта.
+# gini_delta_contribution суммируется до общей Gini(PD)−Gini(raw) внутри выбранной группы.
+# Верхняя полоса на графике динамики — разброс сдвигов клиентов, нижняя — статистический CI.
+
+# %%
+display(movement_result["tables"]["cohort_audit"])
+display(movement_result["tables"]["gini_by_segment"])
+display(movement_result["tables"]["segment_pairs"].loc[
+    lambda table: table["group"].eq(COMPARISON_VALUE)
+])
+display(movement_result["tables"]["rank_movements"].sort_values("_cal_rank_shift").head(20))
+
+# Если нужна только одна картинка:
+# display(movement_result["figures"]["rank_migration"])
+# output_dir=None в вызове выше оставляет результаты только в памяти.
+
+# %% [markdown]
 # ## 6. Проверяем сдвиги признаков и сегменты
 #
 # PSI считается между reference и recent. Это индикатор сдвига, не доказательство причины.
